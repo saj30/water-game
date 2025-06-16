@@ -1,0 +1,769 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Water Souls Game Prototype</title>
+    <style>
+        html, body {
+            height: 100%;
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background: #181818;
+        }
+        #game-canvas {
+            display: block;
+            position: absolute;
+            top: 0; left: 0;
+            width: 100vw;
+            height: 100vh;
+        }
+    </style>
+</head>
+<body>
+<canvas id="game-canvas"></canvas>
+<script>
+// --- Enemy class ---
+class Enemy {
+    constructor(x, y, opts = {}) {
+        this.x = x;
+        this.y = y;
+        this.boss = !!opts.boss;
+        this.size = this.boss ? 80 : 40;
+        this.color = this.boss ? '#21c96b' : '#21c96b'; // Boss and enemy: green
+        this.speed = this.boss ? 1 : 2;
+        this.health = this.maxHealth = this.boss ? 250 : 50;
+        this.dead = false;
+        this.attacking = false;
+        this.attackTimer = 0;
+        this.attackDuration = this.boss ? 600 : 350; // Boss swings slower
+        this.attackBaseAngle = 0;
+        this.attackSwingArc = Math.PI / 2;
+        this.hasHit = false;
+        this.swordLength = this.boss ? 220 : 50; // Boss swings from farther
+        this.prevX = this.x;
+        this.prevY = this.y;
+        this.baseDamage = this.boss ? 10 : 5;
+        this.damageMultiplier = 1;
+    }
+
+    update(targetX, targetY) {
+        this.prevX = this.x;
+        this.prevY = this.y;
+
+        if (this.dead) return;
+
+        if (this.health <= 0 && !this.dead) {
+            this.dead = true;
+            this.attacking = false;
+            this.attackTimer = 0;
+            this.hasHit = false;
+            return;
+        }
+
+        // Sword attack logic
+        const dx = targetX - (this.x + this.size / 2);
+        const dy = targetY - (this.y + this.size / 2);
+        const dist = Math.hypot(dx, dy);
+
+        // Boss: only swing if close, but from farther away
+        if (this.boss) {
+            if (!this.attacking && dist < 180) {
+                this.attacking = true;
+                this.attackTimer = this.attackDuration;
+                this.hasHit = false;
+                this.attackBaseAngle = Math.atan2(dy, dx);
+            }
+        } else {
+            // Normal enemy
+            if (!this.attacking && dist < 70) {
+                this.attacking = true;
+                this.attackTimer = this.attackDuration;
+                this.hasHit = false;
+                this.attackBaseAngle = Math.atan2(dy, dx);
+            }
+        }
+
+        // Move towards player if not attacking
+        if (!this.attacking && dist > 1) {
+            this.x += (dx / dist) * this.speed;
+            this.y += (dy / dist) * this.speed;
+        }
+
+        // Attack timer
+        if (this.attacking) {
+            this.attackTimer -= 16;
+            if (this.attackTimer <= 0) {
+                this.attacking = false;
+                this.hasHit = false;
+            }
+        }
+    }
+
+    getSwordLine() {
+        if (!this.attacking || this.dead) return null;
+        const ex = this.x + this.size / 2;
+        const ey = this.y + this.size / 2;
+        const swordLength = this.swordLength;
+        const progress = 1 - (this.attackTimer / this.attackDuration);
+        const swingStart = this.attackBaseAngle - this.attackSwingArc / 2;
+        const swingEnd = this.attackBaseAngle + this.attackSwingArc / 2;
+        const swingAngle = swingStart + (swingEnd - swingStart) * progress;
+        const sx = ex + Math.cos(swingAngle) * swordLength;
+        const sy = ey + Math.sin(swingAngle) * swordLength;
+        return { x1: ex, y1: ey, x2: sx, y2: sy };
+    }
+
+    draw(ctx, alpha = 1) {
+        const drawX = this.prevX + (this.x - this.prevX) * alpha;
+        const drawY = this.prevY + (this.y - this.prevY) * alpha;
+
+        if (this.dead) return;
+
+        // Draw water droplet shape
+        ctx.save();
+        ctx.translate(drawX + this.size / 2, drawY + this.size / 2);
+        ctx.scale(this.size / 40, this.size / 40);
+        ctx.beginPath();
+        ctx.moveTo(0, -20);
+        ctx.bezierCurveTo(14, -10, 20, 10, 0, 20);
+        ctx.bezierCurveTo(-20, 10, -14, -10, 0, -20);
+        ctx.closePath();
+        ctx.fillStyle = this.color;
+        ctx.shadowColor = this.color;
+        ctx.shadowBlur = 16;
+        ctx.fill();
+        ctx.shadowBlur = 0;
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = "#fff";
+        ctx.globalAlpha = 0.25;
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+        // Water highlight
+        ctx.beginPath();
+        ctx.ellipse(-7, -10, 4, 7, Math.PI/6, 0, Math.PI*2);
+        ctx.fillStyle = "rgba(255,255,255,0.25)";
+        ctx.fill();
+        ctx.restore();
+
+        // Draw sword swing
+        if (this.attacking) {
+            ctx.save();
+            ctx.strokeStyle = this.boss ? '#21c96b' : 'aqua';
+            ctx.lineWidth = 8;
+            ctx.beginPath();
+            const sword = this.getSwordLine();
+            ctx.moveTo(sword.x1, sword.y1);
+            ctx.lineTo(sword.x2, sword.y2);
+            ctx.stroke();
+            ctx.restore();
+        }
+    }
+}
+
+// --- Player and UI code ---
+const canvas = document.getElementById('game-canvas');
+const ctx = canvas.getContext('2d');
+
+function resizeCanvas() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+}
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
+
+const player = {
+    x: canvas.width / 2 - 20,
+    y: canvas.height / 2 - 20,
+    size: 40,
+    color: 'green',
+    speed: 4,
+    strength: 10,
+    vitality: 50,
+    maxHealth: 150, // Tripled health
+    health: 150,
+    xp: 0,
+    xpMax: 20,
+    statPoints: 3,
+    swordLength: 50,
+    swordStat: 0,
+    attacking: false,
+    attackTimer: 0,
+    attackDuration: 250,
+    attackBaseAngle: 0,
+    attackSwingArc: Math.PI / 2,
+    enemiesHitThisSwing: new Set(),
+    addSpeed()   { if (this.statPoints > 0) { this.speed++; this.statPoints--; this.health = this.maxHealth; } },
+    addStrength(){ if (this.statPoints > 0) { this.strength+=2; this.statPoints--; this.health = this.maxHealth; } },
+    addVitality(){ if (this.statPoints > 0) { this.vitality+=5; this.maxHealth+=15; this.health = this.maxHealth; this.statPoints--; } },
+    addSword()   { if (this.statPoints > 0) { this.swordStat++; this.swordLength += 15; this.statPoints--; } }
+};
+
+let lastPlayerHealth = player.health;
+let lastEnemyHealths = new Map();
+
+const keys = {};
+window.addEventListener('keydown', e => {
+    keys[e.code] = true;
+    if (e.code === 'Tab') {
+        showStats = !showStats;
+        e.preventDefault();
+    }
+});
+window.addEventListener('keyup', e => keys[e.code] = false);
+
+let showStats = false;
+window.statBtnBounds = [];
+
+// --- Controls Overlay ---
+let showControls = true;
+let controlsStartTime = Date.now();
+
+function drawControlsOverlay() {
+    if (!showControls) return;
+    const elapsed = (Date.now() - controlsStartTime) / 1000;
+    if (elapsed > 60) {
+        showControls = false;
+        return;
+    }
+    ctx.save();
+    ctx.globalAlpha = 0.85;
+    // Static position: center of the room
+    const boxW = 320, boxH = 90, rad = 14;
+    const boxX = canvas.width/2 - boxW/2;
+    const boxY = canvas.height/2 - boxH/2;
+    ctx.fillStyle = "#232323";
+    if (ctx.roundRect) {
+        ctx.beginPath();
+        ctx.roundRect(boxX, boxY, boxW, boxH, rad);
+        ctx.fill();
+    } else {
+        ctx.fillRect(boxX, boxY, boxW, boxH);
+    }
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = "#ffe066";
+    ctx.font = "bold 16px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("Controls", boxX + boxW/2, boxY + 22);
+
+    ctx.fillStyle = "#fff";
+    ctx.font = "13px monospace";
+    ctx.fillText("Move: WASD or Arrow Keys", boxX + boxW/2, boxY + 40);
+    ctx.fillText("Open Stat Menu: Tab", boxX + boxW/2, boxY + 56);
+    ctx.fillText("Upgrade Stat: Click + in Stat Menu", boxX + boxW/2, boxY + 72);
+    ctx.fillText("Attack: Left Mouse Button", boxX + boxW/2, boxY + 88);
+    ctx.restore();
+}
+
+// --- Mouse for attack direction ---
+let mouse = {x: 0, y: 0};
+canvas.addEventListener('mousemove', e => {
+    const rect = canvas.getBoundingClientRect();
+    mouse.x = e.clientX - rect.left;
+    mouse.y = e.clientY - rect.top;
+});
+canvas.addEventListener('mousedown', e => {
+    if (!showStats && e.button === 0) startPlayerAttack();
+});
+function startPlayerAttack() {
+    if (!player.attacking) {
+        player.attacking = true;
+        player.attackTimer = player.attackDuration;
+        player.enemiesHitThisSwing = new Set();
+        const px = player.x + player.size / 2;
+        const py = player.y + player.size / 2;
+        player.attackBaseAngle = Math.atan2(mouse.y - py, mouse.x - px);
+    }
+}
+
+canvas.addEventListener('click', e => {
+    if (!showStats) return;
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    for (const btn of window.statBtnBounds) {
+        if (
+            mx >= btn.x && mx <= btn.x + btn.w &&
+            my >= btn.y && my <= btn.y + btn.h &&
+            player.statPoints > 0
+        ) {
+            btn.action();
+        }
+    }
+});
+
+// --- Wave system ---
+let wave = 1;
+let waveTimer = 0;
+let wavePopupTimer = 0;
+let levelUpTimer = 0;
+let waveCycle = 0; // Tracks how many 10-wave cycles have passed
+
+// --- Enemy spawning ---
+let enemies = [];
+function spawnEnemiesForWave() {
+    enemies = [];
+    // Calculate how many 10-wave cycles have passed
+    waveCycle = Math.floor((wave - 1) / 10);
+    // After every 10th wave, reset enemy count to 1 and scale health/damage
+    let numEnemies = (wave % 10 === 0) ? 1 : ((wave - 1) % 10 + 1);
+    let healthMultiplier = Math.pow(1.5, waveCycle);
+    let damageMultiplier = Math.pow(1.5, waveCycle);
+
+    for (let i = 0; i < numEnemies; i++) {
+        // On every 10th wave, spawn a boss as the only enemy
+        let isBoss = (wave % 10 === 0) && (i === numEnemies - 1);
+        let edge = Math.floor(Math.random() * 4);
+        let x, y;
+        if (edge === 0) { // top
+            x = Math.random() * (canvas.width - 40);
+            y = 0;
+        } else if (edge === 1) { // bottom
+            x = Math.random() * (canvas.width - 40);
+            y = canvas.height - 40;
+        } else if (edge === 2) { // left
+            x = 0;
+            y = Math.random() * (canvas.height - 40);
+        } else { // right
+            x = canvas.width - 40;
+            y = Math.random() * (canvas.height - 40);
+        }
+        let enemy = new Enemy(x, y, { boss: isBoss });
+        // Scale health
+        enemy.maxHealth = enemy.health = (isBoss ? 250 : 50) * healthMultiplier;
+        // Store base damage for scaling
+        enemy.baseDamage = isBoss ? 10 : 5;
+        enemy.damageMultiplier = damageMultiplier;
+        enemies.push(enemy);
+    }
+    wavePopupTimer = 90; // Show wave popup for 1.5 seconds
+}
+
+// Start first wave
+spawnEnemiesForWave();
+
+// --- Collision helpers ---
+function pointToLineDist(px, py, x1, y1, x2, y2) {
+    const A = px - x1;
+    const B = py - y1;
+    const C = x2 - x1;
+    const D = y2 - y1;
+    const dot = A * C + B * D;
+    const len_sq = C * C + D * D;
+    let param = -1;
+    if (len_sq !== 0) param = dot / len_sq;
+    let xx, yy;
+    if (param < 0) {
+        xx = x1;
+        yy = y1;
+    } else if (param > 1) {
+        xx = x2;
+        yy = y2;
+    } else {
+        xx = x1 + param * C;
+        yy = y1 + param * D;
+    }
+    const dx = px - xx;
+    const dy = py - yy;
+    return Math.sqrt(dx * dx + dy * dy);
+}
+
+function update() {
+    if (showStats) return;
+    let vx = 0, vy = 0;
+    if (keys['KeyW'] || keys['ArrowUp']) vy -= player.speed;
+    if (keys['KeyS'] || keys['ArrowDown']) vy += player.speed;
+    if (keys['KeyA'] || keys['ArrowLeft']) vx -= player.speed;
+    if (keys['KeyD'] || keys['ArrowRight']) vx += player.speed;
+    player.x += vx;
+    player.y += vy;
+    player.x = Math.max(0, Math.min(canvas.width - player.size, player.x));
+    player.y = Math.max(0, Math.min(canvas.height - player.size, player.y));
+
+    // Player attack timer
+    if (player.attacking) {
+        player.attackTimer -= 16;
+        if (player.attackTimer <= 0) {
+            player.attacking = false;
+            player.enemiesHitThisSwing.clear();
+        }
+    }
+
+    // Update enemies
+    for (const enemy of enemies) {
+        enemy.update(player.x + player.size/2, player.y + player.size/2);
+    }
+
+    // --- Player sword hit detection (multiple enemies can be hit) ---
+    if (player.attacking) {
+        const sword = getPlayerSwordLine();
+        for (const enemy of enemies) {
+            if (enemy.dead || player.enemiesHitThisSwing.has(enemy)) continue;
+            // Check if enemy center is near sword line
+            const ex = enemy.x + enemy.size / 2;
+            const ey = enemy.y + enemy.size / 2;
+            const dist = pointToLineDist(ex, ey, sword.x1, sword.y1, sword.x2, sword.y2);
+            if (dist < enemy.size / 2 + 8) {
+                enemy.health -= player.strength;
+                player.enemiesHitThisSwing.add(enemy);
+                if (enemy.health <= 0 && !enemy.dead) {
+                    // Give XP for kill
+                    player.xp += 10;
+                }
+            }
+        }
+    }
+
+    // --- Enemy sword hit detection (damage halved, player health can go to 0) ---
+    for (const enemy of enemies) {
+        if (enemy.attacking && !enemy.hasHit && !enemy.dead) {
+            const sword = enemy.getSwordLine();
+            if (!sword) continue;
+            // Check if player center is near sword line
+            const px = player.x + player.size / 2;
+            const py = player.y + player.size / 2;
+            const dist = pointToLineDist(px, py, sword.x1, sword.y1, sword.x2, sword.y2);
+            if (dist < player.size / 2 + 8) {
+                // Use scaled damage
+                let dmg = (enemy.baseDamage ?? (enemy.boss ? 10 : 5)) * (enemy.damageMultiplier ?? 1);
+                player.health -= dmg;
+                if (player.health < 0) player.health = 0;
+                enemy.hasHit = true;
+            }
+        }
+    }
+
+    // XP system: every 20 xp, gain a stat point, carry over extra xp
+    while (player.xp >= 20) {
+        player.xp -= 20;
+        player.statPoints += 1;
+        levelUpTimer = 60; // Show popup for 1 second (60 frames)
+    }
+
+    // Clamp player health to 0 minimum
+    if (player.health < 0) player.health = 0;
+
+    // --- Wave system ---
+    if (enemies.length > 0 && enemies.every(e => e.dead)) {
+        waveTimer++;
+        if (waveTimer > 60) { // 1 second delay between waves
+            wave++;
+            spawnEnemiesForWave();
+            waveTimer = 0;
+        }
+    } else {
+        waveTimer = 0;
+    }
+}
+
+function getPlayerSwordLine() {
+    if (!player.attacking) return null;
+    const px = player.x + player.size / 2;
+    const py = player.y + player.size / 2;
+    const swordLength = player.swordLength;
+    const progress = 1 - (player.attackTimer / player.attackDuration);
+    const swingStart = player.attackBaseAngle - player.attackSwingArc / 2;
+    const swingEnd = player.attackBaseAngle + player.attackSwingArc / 2;
+    const swingAngle = swingStart + (swingEnd - swingStart) * progress;
+    const sx = px + Math.cos(swingAngle) * swordLength;
+    const sy = py + Math.sin(swingAngle) * swordLength;
+    return { x1: px, y1: py, x2: sx, y2: sy };
+}
+
+function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // Draw controls overlay behind player for the first minute
+    drawControlsOverlay();
+
+    // Draw enemies
+    for (const enemy of enemies) {
+        enemy.draw(ctx);
+    }
+
+    // --- Long health bars at the bottom for player and enemies ---
+    // Player health bar (bottom)
+    ctx.save();
+    const barW = Math.max(300, canvas.width * 0.5);
+    const barH = 18;
+    const barX = canvas.width/2 - barW/2;
+    const barY = canvas.height - 40;
+    // Background
+    ctx.fillStyle = '#222';
+    ctx.fillRect(barX, barY, barW, barH);
+    // Damage taken (red flash)
+    if (lastPlayerHealth > player.health) {
+        ctx.fillStyle = '#a33';
+        ctx.fillRect(barX + barW * (player.health / player.maxHealth), barY, barW * ((lastPlayerHealth - player.health) / player.maxHealth), barH);
+    }
+    // Health
+    ctx.fillStyle = 'limegreen';
+    ctx.fillRect(barX, barY, barW * (player.health / player.maxHealth), barH);
+    ctx.strokeStyle = '#000';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(barX, barY, barW, barH);
+    // Text
+    ctx.fillStyle = '#fff';
+    ctx.font = "bold 15px monospace";
+    ctx.textAlign = "center";
+    ctx.fillText(`Player HP: ${Math.max(0, Math.round(player.health))} / ${player.maxHealth}`, barX + barW/2, barY + barH - 4);
+    ctx.restore();
+    lastPlayerHealth = player.health;
+
+    // Enemy health bars (bottom, stacked above player bar)
+    let enemyBarY = barY - 24;
+    for (const enemy of enemies) {
+        if (enemy.dead) continue;
+        const eBarW = Math.max(120, canvas.width * 0.2);
+        const eBarX = canvas.width/2 - eBarW/2;
+        // Damage flash
+        let prev = lastEnemyHealths.get(enemy) ?? enemy.health;
+        ctx.save();
+        ctx.fillStyle = '#222';
+        ctx.fillRect(eBarX, enemyBarY, eBarW, 14);
+        if (prev > enemy.health) {
+            ctx.fillStyle = '#a33';
+            ctx.fillRect(eBarX + eBarW * (enemy.health / enemy.maxHealth), enemyBarY, eBarW * ((prev - enemy.health) / enemy.maxHealth), 14);
+        }
+        ctx.fillStyle = enemy.boss ? '#4e2cff' : 'red';
+        ctx.fillRect(eBarX, enemyBarY, eBarW * (enemy.health / enemy.maxHealth), 14);
+        ctx.strokeStyle = '#000';
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(eBarX, enemyBarY, eBarW, 14);
+        ctx.fillStyle = '#fff';
+        ctx.font = "bold 12px monospace";
+        ctx.textAlign = "center";
+        ctx.fillText(`${enemy.boss ? "Boss" : "Enemy"} HP: ${Math.max(0, Math.round(enemy.health))} / ${enemy.maxHealth}`, eBarX + eBarW/2, enemyBarY + 11);
+        ctx.restore();
+        lastEnemyHealths.set(enemy, enemy.health);
+        enemyBarY -= 20;
+    }
+
+    // Health bar (top left, small)
+    ctx.save();
+    ctx.fillStyle = 'rgba(0,0,0,0.4)';
+    ctx.fillRect(16, 16, 100, 14);
+    ctx.fillStyle = 'limegreen';
+    ctx.fillRect(16, 16, 100 * (player.health / player.maxHealth), 14);
+    ctx.strokeStyle = 'black';
+    ctx.strokeRect(16, 16, 100, 14);
+    ctx.restore();
+
+    // XP bar
+    ctx.save();
+    ctx.fillStyle = '#444';
+    ctx.fillRect(16, 36, 100, 10);
+    ctx.fillStyle = 'yellow';
+    ctx.fillRect(16, 36, 100 * (player.xp / 20), 10);
+    ctx.strokeStyle = 'black';
+    ctx.strokeRect(16, 36, 100, 10);
+    ctx.restore();
+
+    // Player water droplet
+    ctx.save();
+    ctx.translate(player.x + player.size / 2, player.y + player.size / 2);
+    ctx.scale(player.size / 40, player.size / 40);
+    ctx.beginPath();
+    ctx.moveTo(0, -20);
+    ctx.bezierCurveTo(14, -10, 20, 10, 0, 20);
+    ctx.bezierCurveTo(-20, 10, -14, -10, 0, -20);
+    ctx.closePath();
+    ctx.fillStyle = "#1be7ff";
+    ctx.shadowColor = "#1be7ff";
+    ctx.shadowBlur = 16;
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = "#fff";
+    ctx.globalAlpha = 0.25;
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+    // Water highlight
+    ctx.beginPath();
+    ctx.ellipse(-7, -10, 4, 7, Math.PI/6, 0, Math.PI*2);
+    ctx.fillStyle = "rgba(255,255,255,0.25)";
+    ctx.fill();
+    ctx.restore();
+
+    // Draw player sword swing
+    if (player.attacking) {
+        ctx.save();
+        ctx.strokeStyle = '#1be7ff';
+        ctx.lineWidth = 8;
+        ctx.beginPath();
+        const sword = getPlayerSwordLine();
+        ctx.moveTo(sword.x1, sword.y1);
+        ctx.lineTo(sword.x2, sword.y2);
+        ctx.stroke();
+        ctx.restore();
+    }
+
+    // Level up popup
+    if (levelUpTimer > 0) {
+        ctx.save();
+        ctx.globalAlpha = Math.min(1, levelUpTimer / 20);
+        ctx.font = "bold 32px sans-serif";
+        ctx.fillStyle = "#ffe066";
+        ctx.textAlign = "center";
+        ctx.fillText("LEVEL UP!", canvas.width/2, canvas.height/2 - 80);
+        ctx.restore();
+        levelUpTimer--;
+    }
+
+    // Wave popup
+    if (wavePopupTimer > 0) {
+        ctx.save();
+        ctx.globalAlpha = Math.min(1, wavePopupTimer / 30);
+        ctx.font = "bold 32px sans-serif";
+        ctx.fillStyle = "#6cf";
+        ctx.textAlign = "center";
+        ctx.fillText(`Wave ${wave}${(wave % 10 === 0 ? " - BOSS!" : "")}`, canvas.width/2, canvas.height/2 - 120);
+        ctx.restore();
+        wavePopupTimer--;
+    }
+
+    // Stat menu
+    if (showStats) drawStatMenu();
+}
+
+function drawStatMenu() {
+    ctx.save();
+    ctx.globalAlpha = 0.85;
+    ctx.fillStyle = "#232323";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.globalAlpha = 1;
+    const boxX = canvas.width/2-150, boxY = canvas.height/2-100, boxW = 300, boxH = 240, rad = 18;
+    for (let i = 0; i < 10; i++) {
+        ctx.save();
+        ctx.strokeStyle = "#fff";
+        ctx.lineWidth = 3;
+        ctx.globalAlpha = 0.25 + 0.15 * (i === 0 ? 1 : 0);
+        ctx.beginPath();
+        if (ctx.roundRect) {
+            ctx.roundRect(
+                boxX + Math.random()*4-2,
+                boxY + Math.random()*4-2,
+                boxW + Math.random()*4-2,
+                boxH + Math.random()*4-2,
+                rad + Math.random()*4-2
+            );
+        } else {
+            ctx.rect(
+                boxX + Math.random()*4-2,
+                boxY + Math.random()*4-2,
+                boxW + Math.random()*4-2,
+                boxH + Math.random()*4-2
+            );
+        }
+        ctx.stroke();
+        ctx.restore();
+    }
+    ctx.save();
+    ctx.globalAlpha = 0.95;
+    ctx.fillStyle = "#353535";
+    ctx.beginPath();
+    if (ctx.roundRect) {
+        ctx.roundRect(boxX, boxY, boxW, boxH, rad);
+    } else {
+        ctx.rect(boxX, boxY, boxW, boxH);
+    }
+    ctx.fill();
+    ctx.restore();
+    ctx.save();
+    ctx.globalAlpha = 0.08;
+    ctx.strokeStyle = "#fff";
+    const t = performance.now() * 0.0002;
+    for (let i = 0; i < 10; i++) {
+        ctx.beginPath();
+        const ax = boxX + (boxW/2) + Math.sin(t + i) * (boxW/2) * Math.sin(i);
+        const ay = boxY + (boxH/2) + Math.cos(t + i*1.3) * (boxH/2) * Math.cos(i);
+        const bx = boxX + (boxW/2) + Math.cos(t + i*1.7) * (boxW/2) * Math.cos(i*0.7);
+        const by = boxY + (boxH/2) + Math.sin(t + i*1.2) * (boxH/2) * Math.sin(i*0.5);
+        ctx.moveTo(ax, ay);
+        ctx.lineTo(bx, by);
+        ctx.stroke();
+    }
+    ctx.restore();
+    ctx.save();
+    ctx.fillStyle = "#ffe066";
+    ctx.font = "bold 22px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText(`Stat Points: ${player.statPoints}`, canvas.width/2, boxY + 36);
+    ctx.restore();
+    const statNames = ["Speed", "Strength", "Vitality", "Sword"];
+    const statValues = [player.speed, player.strength, player.vitality, player.swordStat];
+    const plusActions = [
+        () => player.addSpeed(),
+        () => player.addStrength(),
+        () => player.addVitality(),
+        () => player.addSword()
+    ];
+    const yStart = canvas.height/2 - 10;
+    window.statBtnBounds = [];
+    for (let i = 0; i < 4; i++) {
+        const y = yStart + i * 35;
+        ctx.save();
+        ctx.fillStyle = "#fff";
+        ctx.font = "20px monospace";
+        ctx.textAlign = "left";
+        ctx.fillText(`${statNames[i]}: ${statValues[i]}`, canvas.width/2-100, y);
+        const btnX = canvas.width/2 + 60, btnY = y - 18, btnW = 32, btnH = 32, r = 10;
+        ctx.beginPath();
+        ctx.moveTo(btnX + r, btnY);
+        ctx.lineTo(btnX + btnW - r, btnY);
+        ctx.quadraticCurveTo(btnX + btnW, btnY, btnX + btnW, btnY + r);
+        ctx.lineTo(btnX + btnW, btnY + btnH - r);
+        ctx.quadraticCurveTo(btnX + btnW, btnY + btnH, btnX + btnW - r, btnY + btnH);
+        ctx.lineTo(btnX + r, btnY + btnH);
+        ctx.quadraticCurveTo(btnX, btnY + btnH, btnX, btnY + btnH - r);
+        ctx.lineTo(btnX, btnY + r);
+        ctx.quadraticCurveTo(btnX, btnY, btnX + r, btnY);
+        ctx.closePath();
+        if (player.statPoints > 0) {
+            ctx.fillStyle = "#6f6";
+            ctx.shadowColor = "#222";
+            ctx.shadowBlur = 6;
+            ctx.lineWidth = 2.5;
+            ctx.strokeStyle = "#222";
+            ctx.fill();
+            ctx.stroke();
+            ctx.shadowBlur = 0;
+            ctx.beginPath();
+            ctx.arc(btnX + btnW/2, btnY + btnH/2, 12, 0, Math.PI*2);
+            ctx.globalAlpha = 0.12;
+            ctx.fillStyle = "#fff";
+            ctx.fill();
+            ctx.globalAlpha = 1;
+        } else {
+            ctx.fillStyle = "#aaa";
+            ctx.shadowBlur = 0;
+            ctx.lineWidth = 1.5;
+            ctx.strokeStyle = "#888";
+            ctx.fill();
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.arc(btnX + btnW/2, btnY + btnH/2, 12, 0, Math.PI*2);
+            ctx.globalAlpha = 0.10;
+            ctx.fillStyle = "#000";
+            ctx.fill();
+            ctx.globalAlpha = 1;
+        }
+        ctx.fillStyle = "#222";
+        ctx.font = "bold 24px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("+", btnX + btnW/2, btnY + btnH/2 + 1);
+        ctx.restore();
+        window.statBtnBounds[i] = {x: btnX, y: btnY, w: btnW, h: btnH, action: plusActions[i]};
+    }
+}
+
+function gameLoop() {
+    update();
+    draw();
+    requestAnimationFrame(gameLoop);
+}
+gameLoop();
+</script>
+</body>
+</html>
